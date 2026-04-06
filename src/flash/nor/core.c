@@ -288,6 +288,15 @@ int get_flash_bank_by_num(unsigned int num, struct flash_bank **bank)
 	return ERROR_OK;
 }
 
+static target_addr_t flash_normalize_addr(struct target *target, target_addr_t addr)
+{
+	if (target_address_bits(target) == 32
+			&& (addr & UINT64_C(0xffffffff00000000)) == UINT64_C(0xffffffff00000000))
+		return addr & UINT64_C(0x00000000ffffffff);
+
+	return addr;
+}
+
 /* lookup flash bank by address, bank not found is success, but
  * result_bank is set to NULL. */
 int get_flash_bank_by_addr(struct target *target,
@@ -296,6 +305,8 @@ int get_flash_bank_by_addr(struct target *target,
 	struct flash_bank **result_bank)
 {
 	struct flash_bank *c;
+
+	addr = flash_normalize_addr(target, addr);
 
 	/* cycle through bank list */
 	for (c = flash_banks; c; c = c->next) {

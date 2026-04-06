@@ -1939,6 +1939,55 @@ static int compare_bank(const void *a, const void *b)
 		return -1;
 }
 
+static bool gdb_memory_map_use_sign_extended_aliases(struct target *target)
+{
+	return target_address_bits(target) == 32
+		&& strcmp(target_type_name(target), "mips_m4k") == 0;
+}
+
+static bool gdb_memory_map_needs_sign_extension(target_addr_t address)
+{
+	return (address & UINT64_C(0xffffffff00000000)) == 0
+		&& (address & UINT64_C(0x80000000)) != 0;
+}
+
+static target_addr_t gdb_memory_map_sign_extend(target_addr_t address)
+{
+	return address | UINT64_C(0xffffffff00000000);
+}
+
+static void gdb_memory_map_emit_ram_region(int *retval,
+		char **xml, int *pos, int *size,
+		bool emit_sign_extended_aliases,
+		target_addr_t start, target_addr_t length)
+{
+	if (length == 0)
+		return;
+
+	xml_printf(retval, xml, pos, size,
+		"<memory type=\"ram\" start=\"" TARGET_ADDR_FMT "\" "
+		"length=\"" TARGET_ADDR_FMT "\"/>\n",
+		start, length);
+
+	if (!emit_sign_extended_aliases)
+		return;
+
+	const target_addr_t kseg_start = UINT64_C(0x80000000);
+	target_addr_t end = start + length - 1;
+	if (end < kseg_start)
+		return;
+
+	target_addr_t alias_start = start < kseg_start ? kseg_start : start;
+	if (!gdb_memory_map_needs_sign_extension(alias_start))
+		return;
+
+	target_addr_t alias_length = end - alias_start + 1;
+	xml_printf(retval, xml, pos, size,
+		"<memory type=\"ram\" start=\"" TARGET_ADDR_FMT "\" "
+		"length=\"" TARGET_ADDR_FMT "\"/>\n",
+		gdb_memory_map_sign_extend(alias_start), alias_length);
+}
+
 static int gdb_memory_map(struct connection *connection,
 		char const *packet, int packet_size)
 {
@@ -1961,6 +2010,9 @@ static int gdb_memory_map(struct connection *connection,
 	char *separator;
 	target_addr_t ram_start = 0;
 	unsigned int target_flash_banks = 0;
+	const bool emit_sign_extended_aliases =
+		gdb_memory_map_use_sign_extended_aliases(target);
+	const target_addr_t target_addr_max = target_address_max(target);
 
 	/* skip command character */
 	packet += 23;
@@ -1998,17 +2050,23 @@ static int gdb_memory_map(struct connection *connection,
 
 		p = banks[i];
 
-		if (ram_start < p->base)
-			xml_printf(&retval, &xml, &pos, &size,
-				"<memory type=\"ram\" start=\"" TARGET_ADDR_FMT "\" "
-				"length=\"" TARGET_ADDR_FMT "\"/>\n",
-				ram_start, p->base - ram_start);
+		if (ram_start < p->base) {
+			target_addr_t ram_len = p->base - ram_start;
+			gdb_memory_map_emit_ram_region(&retval, &xml, &pos, &size,
+				emit_sign_extended_aliases, ram_start, ram_len);
+		}
 
 		if (p->read_only) {
 			xml_printf(&retval, &xml, &pos, &size,
 				"<memory type=\"rom\" start=\"" TARGET_ADDR_FMT "\" "
 				"length=\"0x%x\"/>\n",
 				p->base, p->size);
+
+			if (emit_sign_extended_aliases && gdb_memory_map_needs_sign_extension(p->base))
+				xml_printf(&retval, &xml, &pos, &size,
+					"<memory type=\"rom\" start=\"" TARGET_ADDR_FMT "\" "
+					"length=\"0x%x\"/>\n",
+					gdb_memory_map_sign_extend(p->base), p->size);
 		} else {
 			if (p->num_sectors == 0) {
 				xml_printf(&retval, &xml, &pos, &size,
@@ -2017,6 +2075,15 @@ static int gdb_memory_map(struct connection *connection,
 						"length=\"0x%x\">"
 						"<property name=\"blocksize\">0x%x</property>\n"
 					"</memory>\n", p->base, p->size, p->size);
+
+				if (emit_sign_extended_aliases && gdb_memory_map_needs_sign_extension(p->base))
+					xml_printf(&retval, &xml, &pos, &size,
+						"<memory type=\"flash\" "
+							"start=\"" TARGET_ADDR_FMT "\" "
+							"length=\"0x%x\">"
+							"<property name=\"blocksize\">0x%x</property>\n"
+						"</memory>\n",
+						gdb_memory_map_sign_extend(p->base), p->size, p->size);
 			}
 
 			/* Report adjacent groups of same-size sectors.  So for
@@ -2025,6 +2092,7 @@ static int gdb_memory_map(struct connection *connection,
 			 * smaller ones at the end (maybe 32KB).  STR7 will have
 			 * regions with 8KB, 32KB, and 64KB sectors; etc.
 			 */
+			target_addr_t start = 0;
 			for (unsigned int j = 0; j < p->num_sectors; j++) {
 				// Maybe start a new group of sectors
 				if (sector_size == 0) {
@@ -2035,7 +2103,6 @@ static int gdb_memory_map(struct connection *connection,
 						LOG_WARNING("The rest of bank will not show in gdb memory map.");
 						break;
 					}
-					target_addr_t start;
 					start = p->base + p->sectors[j].offset;
 					xml_printf(&retval, &xml, &pos, &size,
 						"<memory type=\"flash\" "
@@ -2063,6 +2130,19 @@ static int gdb_memory_map(struct connection *connection,
 					"</memory>\n",
 					group_len,
 					sector_size);
+
+				if (emit_sign_extended_aliases && gdb_memory_map_needs_sign_extension(start))
+					xml_printf(&retval, &xml, &pos, &size,
+						"<memory type=\"flash\" "
+						"start=\"" TARGET_ADDR_FMT "\" "
+						"length=\"0x%x\">\n"
+						"<property name=\"blocksize\">"
+						"0x%x</property>\n"
+						"</memory>\n",
+						gdb_memory_map_sign_extend(start),
+						group_len,
+						sector_size);
+
 				sector_size = 0;
 			}
 		}
@@ -2070,11 +2150,11 @@ static int gdb_memory_map(struct connection *connection,
 		ram_start = p->base + p->size;
 	}
 
-	if (ram_start != 0)
-		xml_printf(&retval, &xml, &pos, &size,
-			"<memory type=\"ram\" start=\"" TARGET_ADDR_FMT "\" "
-			"length=\"" TARGET_ADDR_FMT "\"/>\n",
-			ram_start, target_address_max(target) - ram_start + 1);
+	if (ram_start != 0 && ram_start <= target_addr_max) {
+		target_addr_t ram_len = target_addr_max - ram_start + 1;
+		gdb_memory_map_emit_ram_region(&retval, &xml, &pos, &size,
+			emit_sign_extended_aliases, ram_start, ram_len);
+	}
 	/* ELSE a flash chip could be at the very end of the address space, in
 	 * which case ram_start will be precisely 0 */
 

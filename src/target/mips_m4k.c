@@ -1006,11 +1006,39 @@ static void mips_m4k_enable_watchpoints(struct target *target)
 	}
 }
 
+static inline target_addr_t pic32_fixup_mem_addr(struct target *target, target_addr_t address)
+{
+	// Maybe the addresses are fine? and its just gdb freaking out with sign extended addresses?
+	// Comment out the mem fixup.
+
+
+	// struct mips_m4k_common *m4k = target_to_m4k(target);
+
+	// if (!m4k->is_pic32mx)
+	// 	return address;
+
+	// /*
+	//  * GDB can represent 32-bit MIPS addresses as sign-extended 64-bit
+	//  * CORE_ADDR values (e.g. 0xffffffff9d001000). Normalize those first,
+	//  * then apply PIC32MX KSEG mapping.
+	//  */
+	// if ((address & UINT64_C(0xffffffff00000000)) == UINT64_C(0xffffffff00000000))
+	// 	address &= UINT64_C(0x00000000ffffffff);
+
+	// /* PIC32MX KSEG0/KSEG1 only */
+	// if (address >= UINT64_C(0x80000000) && address <= UINT64_C(0xbfffffff))
+	// 	return address & UINT64_C(0x1fffffff);
+
+	return address;
+}
+
 static int mips_m4k_read_memory(struct target *target, target_addr_t address,
 		uint32_t size, uint32_t count, uint8_t *buffer)
 {
 	struct mips32_common *mips32 = target_to_mips32(target);
 	struct mips_ejtag *ejtag_info = &mips32->ejtag_info;
+
+	address = pic32_fixup_mem_addr(target, address);
 
 	LOG_DEBUG("address: " TARGET_ADDR_FMT ", size: 0x%8.8" PRIx32 ", count: 0x%8.8" PRIx32,
 			address, size, count);
@@ -1028,10 +1056,11 @@ static int mips_m4k_read_memory(struct target *target, target_addr_t address,
 		return ERROR_TARGET_UNALIGNED_ACCESS;
 
 	if (size == 4 && count > 32) {
-		int retval = mips_m4k_bulk_read_memory(target, address, count, buffer);
-		if (retval == ERROR_OK)
-			return ERROR_OK;
-		LOG_WARNING("Falling back to non-bulk read");
+		// int retval = mips_m4k_bulk_read_memory(target, address, count, buffer);
+		// if (retval == ERROR_OK)
+		// 	return ERROR_OK;
+		// LOG_WARNING("Falling back to non-bulk read");
+		LOG_WARNING("Bulk read eligible but implementation is broken, falling back to non-bulk read");
 	}
 	/* since we don't know if buffer is aligned, we allocate new mem that is always aligned */
 	void *t = NULL;
@@ -1076,6 +1105,8 @@ static int mips_m4k_write_memory(struct target *target, target_addr_t address,
 {
 	struct mips32_common *mips32 = target_to_mips32(target);
 	struct mips_ejtag *ejtag_info = &mips32->ejtag_info;
+
+	address = pic32_fixup_mem_addr(target, address);
 
 	LOG_DEBUG("address: " TARGET_ADDR_FMT ", size: 0x%8.8" PRIx32 ", count: 0x%8.8" PRIx32,
 			address, size, count);
@@ -1261,6 +1292,7 @@ static int mips_m4k_bulk_write_memory(struct target *target, target_addr_t addre
 	return retval;
 }
 
+__attribute__((unused))
 static int mips_m4k_bulk_read_memory(struct target *target, target_addr_t address,
 		uint32_t count, uint8_t *buffer)
 {
