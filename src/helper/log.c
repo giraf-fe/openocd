@@ -75,7 +75,11 @@ static void get_free_memory_space(char *s)
 #elif defined(HAVE_MALLINFO)
 	if (LOG_LEVEL_IS(LOG_LVL_DEBUG_MALLOC)) {
 		struct mallinfo info = mallinfo();
+#if IS_CYGWIN
+		snprintf(s, MEM_STR_LEN, " %zu", info.fordblks);
+#else
 		snprintf(s, MEM_STR_LEN, " %d", info.fordblks);
+#endif
 		return;
 	}
 #endif
@@ -526,7 +530,7 @@ void log_socket_error(const char *socket_desc)
 const char *find_nonprint_char(const char *buf, unsigned int buf_len)
 {
 	for (unsigned int i = 0; i < buf_len; i++) {
-		if (!isprint(buf[i]))
+		if (!isprint((unsigned char)buf[i]))
 			return buf + i;
 	}
 	return NULL;
