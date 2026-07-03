@@ -128,6 +128,7 @@ m4_define([USB1_ADAPTERS],
 	[[[ftdi], [MPSSE mode of FTDI based devices], [FTDI]],
 	[[ftdi_cjtag], [cJTAG (OScan1, JScan3) tunneled thru MPSSE], [FTDI_CJTAG]],
 	[[ch347], [CH347 based devices], [CH347]],
+	[[cklink], [T-Head CK-Link JTAG Probe], [CKLINK]],
 	[[stlink], [ST-Link Programmer], [HLADAPTER_STLINK]],
 	[[ti_icdi], [TI ICDI JTAG Programmer], [HLADAPTER_ICDI]],
 	[[ulink], [Keil ULINK JTAG Programmer], [ULINK]],
@@ -184,6 +185,9 @@ m4_define([SERIAL_PORT_ADAPTERS],
 
 m4_define([PARALLEL_PORT_ADAPTER],
 	[[[parport], [PC Parallel Port], [PARPORT]]])
+
+m4_define([NETWORK_ADAPTERS],
+	[[[xvc], [Xilinx XVC TCP], [XVC]]])
 
 m4_define([LINUXSPIDEV_ADAPTER],
 	[[[linuxspidev], [Linux spidev driver], [LINUXSPIDEV]]])
@@ -296,7 +300,8 @@ AC_ARG_ADAPTERS([
   RSHIM_ADAPTER,
   XVC_ADAPTERS,
   LIBJAYLINK_ADAPTERS,
-  CMSIS_DAP_TCP_ADAPTER
+  CMSIS_DAP_TCP_ADAPTER,
+  NETWORK_ADAPTERS
   ],[auto])
 
 AC_ARG_ADAPTERS([
@@ -616,6 +621,11 @@ PROCESS_ADAPTERS([AMTJTAGACCEL_ADAPTER], [true], [unused])
 PROCESS_ADAPTERS([HOST_ARM_BITBANG_ADAPTERS], ["x$ac_cv_header_sys_mman_h" = "xyes"], [header sys/mman.h])
 PROCESS_ADAPTERS([HOST_ARM_OR_AARCH64_BITBANG_ADAPTERS], ["x$ac_cv_header_sys_mman_h" = "xyes"], [header sys/mman.h])
 PROCESS_ADAPTERS([DUMMY_ADAPTER], [true], [unused])
+PROCESS_ADAPTERS([NETWORK_ADAPTERS], [true], [unused])
+
+AS_IF([test "x$enable_xvc" != "xno"], [
+  build_bitbang=yes
+])
 
 AS_IF([test "x$enable_linuxgpiod" != "xno"], [
   build_bitbang=yes
@@ -750,6 +760,7 @@ AS_IF([test "x${gcc_wextra}" = "xyes"], [
   GCC_WARNINGS="${GCC_WARNINGS} -Wredundant-decls"
   GCC_WARNINGS="${GCC_WARNINGS} -Wpointer-arith"
   GCC_WARNINGS="${GCC_WARNINGS} -Wundef"
+  GCC_WARNINGS="${GCC_WARNINGS} -Wsign-compare"
 ])
 AS_IF([test "x${gcc_werror}" = "xyes"], [
   GCC_WARNINGS="${GCC_WARNINGS} -Werror"
@@ -810,6 +821,7 @@ m4_foreach([adapter_driver], [USB1_ADAPTERS,
 	LIBJAYLINK_ADAPTERS, XVC_ADAPTERS,
 	SERIAL_PORT_ADAPTERS,
 	PARALLEL_PORT_ADAPTER,
+	NETWORK_ADAPTERS,
 	LINUXSPIDEV_ADAPTER,
 	VDEBUG_ADAPTER,
 	JTAG_DPI_ADAPTER,

@@ -2027,8 +2027,7 @@ static int xscale_disable_mmu_caches(struct target *target, int mmu,
 		return retval;
 
 	/* execute cpwait to ensure outstanding operations complete */
-	retval = xscale_send_u32(target, 0x53);
-	return retval;
+	return xscale_send_u32(target, 0x53);
 }
 
 static int xscale_enable_mmu_caches(struct target *target, int mmu,
@@ -2059,8 +2058,7 @@ static int xscale_enable_mmu_caches(struct target *target, int mmu,
 		return retval;
 
 	/* execute cpwait to ensure outstanding operations complete */
-	retval = xscale_send_u32(target, 0x53);
-	return retval;
+	return xscale_send_u32(target, 0x53);
 }
 
 static int xscale_set_breakpoint(struct target *target,
@@ -3736,5 +3734,7 @@ struct target_type xscale_target = {
 	.deinit_target = xscale_deinit_target,
 
 	.virt2phys = xscale_virt2phys,
-	.mmu = xscale_mmu
+	.mmu = xscale_mmu,
+
+	.insn_set = armv4_5_insn_set,
 };

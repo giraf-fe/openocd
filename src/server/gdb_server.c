@@ -220,7 +220,7 @@ static int check_pending(struct connection *connection,
 	}
 
 	FD_ZERO(&read_fds);
-	FD_SET(connection->fd, &read_fds);
+	OCD_FD_SET(connection->fd, &read_fds);
 
 	tv.tv_sec = timeout_s;
 	tv.tv_usec = 0;
@@ -233,7 +233,7 @@ static int check_pending(struct connection *connection,
 		else
 			return ERROR_OK;
 	}
-	*got_data = FD_ISSET(connection->fd, &read_fds) != 0;
+	*got_data = OCD_FD_ISSET(connection->fd, &read_fds) != 0;
 	return ERROR_OK;
 }
 
@@ -424,6 +424,19 @@ static void gdb_log_outgoing_packet(struct connection *connection, const char *p
 	else
 		LOG_TARGET_DEBUG(target, "{%d} sending packet: $%.*s#%2.2x",
 			gdb_connection->unique_index, packet_len, packet_buf, checksum);
+}
+
+static void gdb_log_outgoing_async_notif(struct connection *connection, const char *buf,
+	unsigned int len)
+{
+	if (!LOG_LEVEL_IS(LOG_LVL_DEBUG))
+		return;
+
+	struct target *target = get_target_from_connection(connection);
+	struct gdb_connection *gdb_connection = connection->priv;
+
+	LOG_TARGET_DEBUG(target, "{%d} sending packet: %.*s",
+		gdb_connection->unique_index, len, buf);
 }
 
 static int gdb_put_packet_inner(struct connection *connection,
@@ -3953,6 +3966,7 @@ static void gdb_async_notif(struct connection *connection)
 	LOG_DEBUG("sending packet '%s'", buf);
 #endif
 
+	gdb_log_outgoing_async_notif(connection, buf, len);
 	gdb_write(connection, buf, len);
 }
 

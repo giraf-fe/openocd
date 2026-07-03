@@ -8,7 +8,6 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <time.h>
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -447,9 +446,7 @@ static int increase_dmi_busy_delay(struct target *target)
 	if (res != ERROR_OK)
 		return res;
 
-	res = riscv_scan_increase_delay(&info->learned_delays,
-			RISCV_DELAY_BASE);
-	return res;
+	return riscv_scan_increase_delay(&info->learned_delays, RISCV_DELAY_BASE);
 }
 
 static void reset_learned_delays(struct target *target)
@@ -624,7 +621,7 @@ static int wait_for_idle(struct target *target, uint32_t *abstractcs)
 		return ERROR_FAIL;
 	}
 
-	time_t start = time(NULL);
+	int64_t then = timeval_ms() + 1000 * riscv_get_command_timeout_sec();
 	do {
 		if (dm_read(target, abstractcs, DM_ABSTRACTCS) != ERROR_OK) {
 			/* We couldn't read abstractcs. For safety, overwrite the output value to
@@ -639,7 +636,7 @@ static int wait_for_idle(struct target *target, uint32_t *abstractcs)
 			dm->abstract_cmd_maybe_busy = false;
 			return ERROR_OK;
 		}
-	} while ((time(NULL) - start) < riscv_get_command_timeout_sec());
+	} while (timeval_ms() < then);
 
 	LOG_TARGET_ERROR(target,
 		"Timed out after %ds waiting for busy to go low (abstractcs=0x%" PRIx32 "). "
@@ -1441,13 +1438,31 @@ static int register_read_progbuf(struct target *target, uint64_t *value,
 {
 	assert(target->state == TARGET_HALTED);
 
-	if (number >= GDB_REGNO_FPR0 && number <= GDB_REGNO_FPR31)
-		return fpr_read_progbuf(target, value, number);
-	else if (number >= GDB_REGNO_CSR0 && number <= GDB_REGNO_CSR4095)
-		return csr_read_progbuf(target, value, number);
+	int res;
+	uint64_t new_value;
+	if (number >= GDB_REGNO_FPR0 && number <= GDB_REGNO_FPR31) {
+		res = fpr_read_progbuf(target, &new_value, number);
+	} else if (number >= GDB_REGNO_CSR0 && number <= GDB_REGNO_CSR4095) {
+		res = csr_read_progbuf(target, &new_value, number);
+	} else {
+		LOG_TARGET_ERROR(target, "Unexpected read of %s via program buffer.",
+				riscv_reg_gdb_regno_name(target, number));
+		return ERROR_FAIL;
+	}
+	if (res != ERROR_OK)
+		return res;
 
-	LOG_TARGET_ERROR(target, "Unexpected read of %s via program buffer.",
-			riscv_reg_gdb_regno_name(target, number));
+	unsigned int size_bits = register_size(target, number);
+	unsigned int value_bits = sizeof(*value) * CHAR_BIT;
+	assert(size_bits <= value_bits);
+	if (size_bits == value_bits || new_value >> size_bits == 0) {
+		*value = new_value;
+		return ERROR_OK;
+	}
+	LOG_TARGET_ERROR(target, "Value 0x%" PRIx64 " read from register %s"
+			" exceeds the size of the register (%u bits). This is a HW bug."
+			" Discarding the value", new_value,
+			riscv_reg_gdb_regno_name(target, number), size_bits);
 	return ERROR_FAIL;
 }
 
@@ -1660,7 +1675,7 @@ static int register_read_direct(struct target *target, riscv_reg_t *value,
 
 static int wait_for_authbusy(struct target *target, uint32_t *dmstatus)
 {
-	time_t start = time(NULL);
+	int64_t then = timeval_ms() + 1000 * riscv_get_command_timeout_sec();
 	while (1) {
 		uint32_t value;
 		if (dmstatus_read(target, &value, false) != ERROR_OK)
@@ -1669,7 +1684,7 @@ static int wait_for_authbusy(struct target *target, uint32_t *dmstatus)
 			*dmstatus = value;
 		if (!get_field(value, DM_DMSTATUS_AUTHBUSY))
 			break;
-		if (time(NULL) - start > riscv_get_command_timeout_sec()) {
+		if (timeval_ms() > then) {
 			LOG_TARGET_ERROR(target, "Timed out after %ds waiting for authbusy to go low (dmstatus=0x%x). "
 					"Increase the timeout with riscv set_command_timeout_sec.",
 					riscv_get_command_timeout_sec(),
@@ -1859,14 +1874,14 @@ static int reset_dm(struct target *target)
 		if (result != ERROR_OK)
 			return result;
 
-		const time_t start = time(NULL);
+		int64_t then = timeval_ms() + 1000 * riscv_get_command_timeout_sec();
 		LOG_TARGET_DEBUG(target, "Waiting for the DM to acknowledge reset.");
 		do {
 			result = dm_read(target, &dmcontrol, DM_DMCONTROL);
 			if (result != ERROR_OK)
 				return result;
 
-			if (time(NULL) - start > riscv_get_command_timeout_sec()) {
+			if (timeval_ms() > then) {
 				LOG_TARGET_ERROR(target, "DM didn't acknowledge reset in %d s. "
 						"Increase the timeout with 'riscv set_command_timeout_sec'.",
 						riscv_get_command_timeout_sec());
@@ -1881,14 +1896,14 @@ static int reset_dm(struct target *target)
 	if (result != ERROR_OK)
 		return result;
 
-	const time_t start = time(NULL);
+	int64_t then = timeval_ms() + 1000 * riscv_get_command_timeout_sec();
 	LOG_TARGET_DEBUG(target, "Waiting for the DM to come out of reset.");
 	do {
 		result = dm_read(target, &dmcontrol, DM_DMCONTROL);
 		if (result != ERROR_OK)
 			return result;
 
-		if (time(NULL) - start > riscv_get_command_timeout_sec()) {
+		if (timeval_ms() > then) {
 			LOG_TARGET_ERROR(target, "Debug Module did not become active in %d s. "
 					"Increase the timeout with 'riscv set_command_timeout_sec'.",
 					riscv_get_command_timeout_sec());
@@ -2121,6 +2136,12 @@ static int examine(struct target *target)
 	if (riscv_get_hart_state(target, &state_at_examine_start) != ERROR_OK)
 		return ERROR_FAIL;
 
+	if (state_at_examine_start == RISCV_STATE_UNAVAILABLE) {
+		target->state = TARGET_UNAVAILABLE;
+		LOG_TARGET_INFO(target, "unavailable.");
+		return ERROR_FAIL;
+	}
+
 	RISCV_INFO(r);
 	const bool hart_halted_at_examine_start = state_at_examine_start == RISCV_STATE_HALTED;
 	if (!hart_halted_at_examine_start) {
@@ -2318,7 +2339,7 @@ static int try_set_vsew(struct target *target, unsigned int *debug_vsew)
 
 static int prep_for_vector_access(struct target *target,
 		riscv_reg_t *orig_mstatus, riscv_reg_t *orig_vtype, riscv_reg_t *orig_vl,
-		unsigned int *debug_vl, unsigned int *debug_vsew)
+		riscv_reg_t *orig_vstart, unsigned int *debug_vl, unsigned int *debug_vsew)
 {
 	assert(orig_mstatus);
 	assert(orig_vtype);
@@ -2335,12 +2356,15 @@ static int prep_for_vector_access(struct target *target,
 	if (prep_for_register_access(target, orig_mstatus, GDB_REGNO_VL) != ERROR_OK)
 		return ERROR_FAIL;
 
-	/* Save vtype and vl. */
+	/* Save original vstart, vtype and vl values for later restoration */
+	if (riscv_reg_get(target, orig_vstart, GDB_REGNO_VSTART) != ERROR_OK)
+		return ERROR_FAIL;
 	if (riscv_reg_get(target, orig_vtype, GDB_REGNO_VTYPE) != ERROR_OK)
 		return ERROR_FAIL;
 	if (riscv_reg_get(target, orig_vl, GDB_REGNO_VL) != ERROR_OK)
 		return ERROR_FAIL;
-
+	/* Note: vstart may be non-zero at this point. Updating vsew (via VTYPE)
+	 * reset vstart to 0. */
 	if (try_set_vsew(target, debug_vsew) != ERROR_OK)
 		return ERROR_FAIL;
 	/* Set the number of elements to be updated with results from a vector
@@ -2351,12 +2375,14 @@ static int prep_for_vector_access(struct target *target,
 }
 
 static int cleanup_after_vector_access(struct target *target,
-		riscv_reg_t mstatus, riscv_reg_t vtype, riscv_reg_t vl)
+		riscv_reg_t mstatus, riscv_reg_t vtype, riscv_reg_t vl, riscv_reg_t vstart)
 {
-	/* Restore vtype and vl. */
+	/* Restore vtype, vl and vstart. */
 	if (riscv_reg_write(target, GDB_REGNO_VTYPE, vtype) != ERROR_OK)
 		return ERROR_FAIL;
 	if (riscv_reg_write(target, GDB_REGNO_VL, vl) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_reg_write(target, GDB_REGNO_VSTART, vstart) != ERROR_OK)
 		return ERROR_FAIL;
 	return cleanup_after_register_access(target, mstatus, GDB_REGNO_VL);
 }
@@ -2369,10 +2395,10 @@ int riscv013_get_register_buf(struct target *target, uint8_t *value,
 	if (dm013_select_target(target) != ERROR_OK)
 		return ERROR_FAIL;
 
-	riscv_reg_t mstatus, vtype, vl;
+	riscv_reg_t mstatus, vtype, vl, vstart;
 	unsigned int debug_vl, debug_vsew;
 
-	if (prep_for_vector_access(target, &mstatus, &vtype, &vl,
+	if (prep_for_vector_access(target, &mstatus, &vtype, &vl, &vstart,
 				&debug_vl, &debug_vsew) != ERROR_OK)
 		return ERROR_FAIL;
 
@@ -2410,7 +2436,7 @@ int riscv013_get_register_buf(struct target *target, uint8_t *value,
 		}
 	}
 
-	if (cleanup_after_vector_access(target, mstatus, vtype, vl) != ERROR_OK)
+	if (cleanup_after_vector_access(target, mstatus, vtype, vl, vstart) != ERROR_OK)
 		return ERROR_FAIL;
 
 	return result;
@@ -2424,10 +2450,10 @@ int riscv013_set_register_buf(struct target *target, enum gdb_regno regno,
 	if (dm013_select_target(target) != ERROR_OK)
 		return ERROR_FAIL;
 
-	riscv_reg_t mstatus, vtype, vl;
+	riscv_reg_t mstatus, vtype, vl, vstart;
 	unsigned int debug_vl, debug_vsew;
 
-	if (prep_for_vector_access(target, &mstatus, &vtype, &vl,
+	if (prep_for_vector_access(target, &mstatus, &vtype, &vl, &vstart,
 				&debug_vl, &debug_vsew) != ERROR_OK)
 		return ERROR_FAIL;
 
@@ -2449,7 +2475,7 @@ int riscv013_set_register_buf(struct target *target, enum gdb_regno regno,
 			break;
 	}
 
-	if (cleanup_after_vector_access(target, mstatus, vtype, vl) != ERROR_OK)
+	if (cleanup_after_vector_access(target, mstatus, vtype, vl, vstart) != ERROR_OK)
 		return ERROR_FAIL;
 
 	return result;
@@ -2542,7 +2568,7 @@ static int batch_run_timeout(struct target *target, struct riscv_batch *batch)
 	riscv_batch_add_nop(batch);
 
 	size_t finished_scans = 0;
-	const time_t start = time(NULL);
+	int64_t then = timeval_ms() + 1000 * riscv_get_command_timeout_sec();
 	const unsigned int old_base_delay = riscv_scan_get_delay(&info->learned_delays,
 			RISCV_DELAY_BASE);
 	int result;
@@ -2565,7 +2591,7 @@ static int batch_run_timeout(struct target *target, struct riscv_batch *batch)
 		result = increase_dmi_busy_delay(target);
 		if (result != ERROR_OK)
 			return result;
-	} while (time(NULL) - start < riscv_get_command_timeout_sec());
+	} while (timeval_ms() < then);
 
 	assert(result == ERROR_OK);
 	assert(riscv_batch_was_batch_busy(batch));
@@ -2985,14 +3011,14 @@ static int deassert_reset(struct target *target)
 	uint32_t dmstatus;
 	const unsigned int orig_base_delay = riscv_scan_get_delay(&info->learned_delays,
 			RISCV_DELAY_BASE);
-	time_t start = time(NULL);
+	int64_t then = timeval_ms() + 1000 * riscv_get_command_timeout_sec();
 	LOG_TARGET_DEBUG(target, "Waiting for hart to come out of reset.");
 	do {
 		result = dmstatus_read(target, &dmstatus, true);
 		if (result != ERROR_OK)
 			return result;
 
-		if (time(NULL) - start > riscv_get_command_timeout_sec()) {
+		if (timeval_ms() > then) {
 			LOG_TARGET_ERROR(target, "Hart didn't leave reset in %ds; "
 					"dmstatus=0x%x (allunavail=%s, allhavereset=%s); "
 					"Increase the timeout with riscv set_command_timeout_sec.",
@@ -3178,13 +3204,13 @@ static target_addr_t sb_read_address(struct target *target)
 
 static int read_sbcs_nonbusy(struct target *target, uint32_t *sbcs)
 {
-	time_t start = time(NULL);
+	int64_t then = timeval_ms() + 1000 * riscv_get_command_timeout_sec();
 	while (1) {
 		if (dm_read(target, sbcs, DM_SBCS) != ERROR_OK)
 			return ERROR_FAIL;
 		if (!get_field(*sbcs, DM_SBCS_SBBUSY))
 			return ERROR_OK;
-		if (time(NULL) - start > riscv_get_command_timeout_sec()) {
+		if (timeval_ms() > then) {
 			LOG_TARGET_ERROR(target, "Timed out after %ds waiting for sbbusy to go low (sbcs=0x%x). "
 					"Increase the timeout with riscv set_command_timeout_sec.",
 					riscv_get_command_timeout_sec(), *sbcs);
@@ -5076,10 +5102,6 @@ static unsigned int riscv013_get_progbufsize(const struct target *target)
 	return r->progbufsize;
 }
 
-static int arch_state(struct target *target)
-{
-	return ERROR_OK;
-}
 
 struct target_type riscv013_target = {
 	.name = "riscv",
@@ -5094,8 +5116,6 @@ struct target_type riscv013_target = {
 
 	.assert_reset = assert_reset,
 	.deassert_reset = deassert_reset,
-
-	.arch_state = arch_state
 };
 
 /*** 0.13-specific implementations of various RISC-V helper functions. ***/
